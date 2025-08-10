@@ -3,6 +3,7 @@ import time
 import logging
 import requests
 from datetime import datetime
+import math
 from pybit.unified_trading import HTTP
 from config import API_KEY, SECRET_KEY, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 
@@ -40,6 +41,9 @@ class TradingBot:
         self.position_qty = 0
         self.telegram_token = TELEGRAM_TOKEN
         self.telegram_chat_id = TELEGRAM_CHAT_ID
+        self.qty_step = None
+        self.min_qty = None
+        self._load_symbol_filters()
         
         # Для постепенного закрытия позиции
         self.profit_targets = [
@@ -48,6 +52,40 @@ class TradingBot:
             {'percent': 1.0, 'tp_percent': 1.0, 'close_ratio': 0.2, 'move_sl': False}
         ]
         self.achieved_targets = []
+
+    def _load_symbol_filters(self):
+        """Load lot size filters for the current symbol to format quantities correctly."""
+        try:
+            info = self.client.get_instruments_info(category=self.category, symbol=self.symbol)
+            instrument = info.get('result', {}).get('list', [{}])[0]
+            lot = instrument.get('lotSizeFilter', {})
+            qty_step = lot.get('qtyStep')
+            min_qty = lot.get('minOrderQty')
+            self.qty_step = float(qty_step) if qty_step is not None else None
+            self.min_qty = float(min_qty) if min_qty is not None else None
+            logger.info(f"Loaded symbol filters: qty_step={self.qty_step}, min_qty={self.min_qty}")
+        except Exception as e:
+            logger.warning(f"Could not load symbol filters: {e}")
+            self.qty_step = None
+            self.min_qty = None
+
+    def _format_qty(self, qty: float, round_down: bool = True) -> str:
+        """Format quantity according to exchange step size and minimums."""
+        try:
+            qty_float = float(qty)
+        except Exception:
+            return str(qty)
+        if self.qty_step and self.qty_step > 0:
+            units = qty_float / self.qty_step
+            units = math.floor(units) if round_down else round(units)
+            qty_float = units * self.qty_step
+        if self.min_qty and qty_float < self.min_qty:
+            qty_float = 0.0
+        # Avoid scientific notation in strings
+        if self.qty_step and self.qty_step < 1:
+            decimals = max(0, -int(round(math.log10(self.qty_step))))
+            return f"{qty_float:.{decimals}f}"
+        return str(int(qty_float)) if qty_float.is_integer() else str(qty_float)
 
     def send_telegram_notification(self, message):
         """Send notification to Telegram"""
@@ -76,6 +114,10 @@ class TradingBot:
 
     def calculate_rsi(self, prices):
         """Calculate RSI with numpy for better performance"""
+        prices = np.asarray(prices, dtype=float)
+        if prices.size < self.rsi_window + 1:
+            return np.array([])
+        
         deltas = np.diff(prices)
         gain = np.where(deltas > 0, deltas, 0)
         loss = np.where(deltas < 0, -deltas, 0)
@@ -112,16 +154,9 @@ class TradingBot:
 
     def sleep_to_next_candle(self):
         """Sleep until the next 15-minute candle starts"""
-        now = datetime.now()
-        current_minute = now.minute
-        minutes_past = current_minute % 15
-        minutes_to_wait = 15 - minutes_past if minutes_past > 0 else 0
-        
-        # Calculate seconds to sleep
-        seconds_to_wait = (minutes_to_wait * 60) - now.second
-        if seconds_to_wait <= 0:
-            seconds_to_wait = 900
-            
+        now_ts = time.time()
+        next_ts = ((int(now_ts) // 900) + 1) * 900  # 900 seconds = 15 minutes
+        seconds_to_wait = max(0, int(next_ts - now_ts))
         logger.info(f'Sleeping for {seconds_to_wait} seconds until next candle')
         time.sleep(seconds_to_wait)
 
@@ -169,7 +204,7 @@ class TradingBot:
 
     def update_trailing_stop(self, current_price):
         """Update trailing stop levels based on current price"""
-        if not self.entry_price:
+        if self.entry_price is None:
             return False
             
         activation_threshold = 0.005 * self.entry_price
@@ -202,7 +237,7 @@ class TradingBot:
 
     def check_sl_tp(self, current_price):
         """Check if stop loss, take profit or trailing stop should be triggered"""
-        if not self.entry_price or not self.position_side:
+        if self.entry_price is None or not self.position_side:
             return False
             
         trailing_action = self.update_trailing_stop(current_price)
@@ -259,24 +294,25 @@ class TradingBot:
                     time.sleep(self.retry_delay)
         return None
 
-    def place_trade_order(self, side, qty=None):
+    def place_trade_order(self, side, qty=None, reduce_only: bool = False):
         """Place a trade order with retry logic"""
-        if qty is None:
-            qty = self.trade_qty
-        else:
-            # Convert to string if number is provided
-            if isinstance(qty, (float, int)):
-                qty = str(qty)
+        # Determine and format quantity
+        raw_qty = float(self.trade_qty) if qty is None else float(qty)
+        formatted_qty = self._format_qty(raw_qty, round_down=True)
+        if formatted_qty in ("0", "0.0", "0.00"):
+            logger.warning("Computed order quantity rounds to 0; skipping order")
+            return False
         
         for attempt in range(self.max_retries):
             try:
-                logger.info(f"Attempting {side} order for {qty} (attempt {attempt + 1})")
+                logger.info(f"Attempting {side} order for {formatted_qty} (attempt {attempt + 1})")
                 response = self.client.place_order(
                     category=self.category,
                     symbol=self.symbol,
                     side=side,
                     orderType="Market",
-                    qty=qty
+                    qty=formatted_qty,
+                    reduceOnly=reduce_only
                 )
                 logger.info(f"Successfully executed {side} order. Response: {response}")
                 return True
@@ -288,7 +324,7 @@ class TradingBot:
 
     def check_profit_targets(self, current_price, last_rsi):
         """Check and execute profit-taking targets"""
-        if not self.position_side or not self.entry_price or self.position_qty <= 0:
+        if not self.position_side or self.entry_price is None or self.position_qty <= 0:
             return False
         
         # Calculate current profit percentage
@@ -319,7 +355,7 @@ class TradingBot:
                     close_side = 'Sell' if self.position_side == 'buy' else 'Buy'
                     
                     # Execute partial close
-                    if self.place_trade_order(close_side, qty=close_qty):
+                    if self.place_trade_order(close_side, qty=close_qty, reduce_only=True):
                         # Update position quantity
                         self.position_qty -= close_qty
                         self.achieved_targets.append(target['percent'])
@@ -390,17 +426,20 @@ class TradingBot:
             try:
                 # Get current market data
                 current_price = self.get_current_price()
-                if not current_price:
+                if current_price is None:
                     logger.error("Failed to get current price after retries")
                     continue
                 
                 klines = self.get_klines_data()
-                if not klines:
+                if klines is None or len(klines) == 0:
                     logger.error("Failed to get klines data after retries")
                     continue
                 
                 # Extract close prices
                 close_prices = np.array([float(k[4]) for k in klines], dtype=float)
+                if len(close_prices) <= self.rsi_window:
+                    logger.error("Not enough kline data to compute RSI")
+                    continue
                 logger.info(f"Fetched {len(close_prices)} klines. Price range: {np.min(close_prices):.4f}-{np.max(close_prices):.4f}")
                 
                 # Calculate RSI
@@ -421,7 +460,7 @@ class TradingBot:
                         action = self.check_sl_tp(current_price)
                         if action:
                             logger.info(f"Closing position with {action} order")
-                            if self.place_trade_order(action.capitalize(), qty=self.position_qty):
+                            if self.place_trade_order(action.capitalize(), qty=self.position_qty, reduce_only=True):
                                 # Save closing details for notification
                                 close_qty = self.position_qty
                                 close_price = current_price
