@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Поиск авто{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-body">
+    <h5 class="card-title">Фильтры поиска</h5>
+    <form action="/search" method="get" class="row g-3">
+      <div class="col-md-3">
+        <label for="city" class="form-label">Город (slug)</label>
+        <input type="text" class="form-control" id="city" name="city" placeholder="moskva">
+        <div class="form-text">Например: moskva, sankt-peterburg</div>
+      </div>
+      <div class="col-md-3">
+        <label for="make" class="form-label">Марка</label>
+        <input type="text" class="form-control" id="make" name="make" placeholder="audi">
+      </div>
+      <div class="col-md-3">
+        <label for="model" class="form-label">Модель</label>
+        <input type="text" class="form-control" id="model" name="model" placeholder="a4">
+      </div>
+      <div class="col-md-3">
+        <label for="pages" class="form-label">Страниц</label>
+        <input type="number" class="form-control" id="pages" name="pages" min="1" max="5" value="1">
+      </div>
+
+      <div class="col-md-3">
+        <label for="price_from" class="form-label">Цена от (₽)</label>
+        <input type="number" class="form-control" id="price_from" name="price_from" placeholder="300000">
+      </div>
+      <div class="col-md-3">
+        <label for="price_to" class="form-label">Цена до (₽)</label>
+        <input type="number" class="form-control" id="price_to" name="price_to" placeholder="2000000">
+      </div>
+      <div class="col-md-3">
+        <label for="year_from" class="form-label">Год от</label>
+        <input type="number" class="form-control" id="year_from" name="year_from" placeholder="2015">
+      </div>
+      <div class="col-md-3">
+        <label for="year_to" class="form-label">Год до</label>
+        <input type="number" class="form-control" id="year_to" name="year_to" placeholder="2023">
+      </div>
+
+      <div class="col-12">
+        <button type="submit" class="btn btn-primary">Искать</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
