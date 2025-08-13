@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Результаты{% endblock %}
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h5 class="mb-0">Результаты поиска</h5>
+    <a class="btn btn-outline-secondary btn-sm" href="/">Новый поиск</a>
+  </div>
+
+  {% if error_message %}
+    <div class="alert alert-warning">{{ error_message }}</div>
+  {% endif %}
+
+  {% if listings and listings|length > 0 %}
+    <div class="table-responsive">
+      <table class="table table-striped align-middle">
+        <thead>
+          <tr>
+            <th>Фото</th>
+            <th>Название</th>
+            <th>Цена</th>
+            <th>Год</th>
+            <th>Пробег</th>
+            <th>Город</th>
+            <th>Продавец</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in listings %}
+            <tr>
+              <td style="width: 140px;">
+                {% if item.image_url %}
+                  <img src="{{ item.image_url }}" alt="{{ item.title }}" class="img-fluid rounded" style="max-height: 90px;">
+                {% endif %}
+              </td>
+              <td>
+                <a href="{{ item.link }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>
+              </td>
+              <td>
+                {% if item.price_rub %}
+                  {{ "{:,.0f}".format(item.price_rub)|replace(",", " ") }} ₽
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>{{ item.year or '—' }}</td>
+              <td>
+                {% if item.mileage_km %}
+                  {{ "{:,.0f}".format(item.mileage_km)|replace(",", " ") }} км
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>{{ item.city or '—' }}</td>
+              <td>{{ item.seller_type or '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="alert alert-info">Ничего не найдено.</div>
+  {% endif %}
+{% endblock %}
