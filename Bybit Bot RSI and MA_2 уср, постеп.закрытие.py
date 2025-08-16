@@ -303,9 +303,12 @@ class TradingBot:
 
     def _notify_tpsl_updated(self, tp_price, sl_price):
         """Log and notify TP/SL update."""
-        logger.info(f"Exchange TP/SL updated: TP={tp_price}, SL={sl_price}")
+        tp_str = f"{float(tp_price):.6f}" if tp_price is not None else "-"
+        sl_str = f"{float(sl_price):.6f}" if sl_price is not None else "-"
+        msg = f"Exchange TP/SL updated: TP={tp_str}, SL={sl_str}"
+        logger.info(msg)
         try:
-            self.send_telegram_notification(f"Exchange TP/SL updated: TP={tp_price}, SL={sl_price}")
+            self.send_telegram_notification(msg)
         except Exception:
             pass
 
@@ -518,8 +521,7 @@ class TradingBot:
                                     
                                     # Notify TP/SL updated after averaging
                                     tp, sl = self._compute_tpsl_prices()
-                                    if tp is not None and sl is not None:
-                                        self._notify_tpsl_updated(tp, sl)
+                                    self._notify_tpsl_updated(tp, sl)
                                     
                                     # Send averaging notification
                                     message = (
