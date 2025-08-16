@@ -286,6 +286,42 @@ class TradingBot:
                     time.sleep(self.retry_delay)
         return False
 
+    def _compute_tpsl_prices(self):
+        """Compute TP/SL prices from current entry and config."""
+        if not self.entry_price or not self.position_side:
+            return None, None
+        entry = float(self.entry_price)
+        tp_pct = float(self.take_profit_pct) / 100.0
+        sl_pct = float(self.stop_loss_pct) / 100.0
+        if self.position_side == 'buy':
+            tp_price = entry * (1 + tp_pct)
+            sl_price = entry * (1 - sl_pct)
+        else:
+            tp_price = entry * (1 - tp_pct)
+            sl_price = entry * (1 + sl_pct)
+        return round(tp_price, 6), round(sl_price, 6)
+
+    def _notify_tpsl_updated(self, tp_price, sl_price):
+        """Log and notify TP/SL update."""
+        logger.info(f"Exchange TP/SL updated: TP={tp_price}, SL={sl_price}")
+        try:
+            self.send_telegram_notification(f"Exchange TP/SL updated: TP={tp_price}, SL={sl_price}")
+        except Exception:
+            pass
+
+    def _log_sync_close(self, side, entry, close_price):
+        """Log PnL when position disappeared on exchange between iterations."""
+        try:
+            pnl_pct = 0.0
+            if side and entry:
+                if side == 'buy':
+                    pnl_pct = (close_price - entry) / entry * 100.0
+                else:
+                    pnl_pct = (entry - close_price) / entry * 100.0
+            logger.info(f"Close reason=SYNC_CLOSE, pnl={pnl_pct:.2f}%")
+        except Exception as e:
+            logger.error(f"Error computing SYNC_CLOSE pnl: {e}")
+
     def check_profit_targets(self, current_price, last_rsi):
         """Check and execute profit-taking targets"""
         if not self.position_side or not self.entry_price or self.position_qty <= 0:
@@ -328,6 +364,10 @@ class TradingBot:
                         if target['move_sl']:
                             self.stop_loss_pct = 0
                             logger.info(f"Stop loss moved to break-even at {self.entry_price:.4f}")
+                            # Notify TP/SL update after moving SL to BE
+                            tp, sl = self._compute_tpsl_prices()
+                            if tp is not None and sl is not None:
+                                self._notify_tpsl_updated(tp, sl)
                         
                         # Prepare notification
                         action_type = "TAKE PROFIT" if target['percent'] < 1.0 else "FULL CLOSE"
@@ -408,8 +448,12 @@ class TradingBot:
                 last_rsi = rsi_values[-1]
                 logger.info(f'Last RSI: {last_rsi:.2f}, Current Price: {current_price:.4f}')
                 
-                # Check for open position
-                if self.has_open_position():
+                # Check for open position with SYNC_CLOSE logging
+                had_position = self.position_side is not None and self.position_qty > 0
+                prev_side = self.position_side
+                prev_entry = self.entry_price
+                has_pos = self.has_open_position()
+                if has_pos:
                     logger.info(f"Open position: {self.position_side} at {self.entry_price:.4f}, Size: {self.position_qty}")
                     
                     # 1. Проверяем цели по прибыли
@@ -472,6 +516,11 @@ class TradingBot:
                                         self.lowest_price = min(self.lowest_price, current_price) \
                                             if self.lowest_price is not None else current_price
                                     
+                                    # Notify TP/SL updated after averaging
+                                    tp, sl = self._compute_tpsl_prices()
+                                    if tp is not None and sl is not None:
+                                        self._notify_tpsl_updated(tp, sl)
+                                    
                                     # Send averaging notification
                                     message = (
                                         f"📊 *POSITION AVERAGED*\n\n"
@@ -487,6 +536,9 @@ class TradingBot:
                             else:
                                 logger.info("No averaging signal detected")
                 else:
+                    # If position disappeared on exchange, log SYNC_CLOSE with pnl
+                    if had_position:
+                        self._log_sync_close(prev_side, prev_entry, current_price)
                     # No open position - check new signals
                     logger.info("No open position - checking for signals")
                     if last_rsi <= self.rsi_buy_threshold:
@@ -509,28 +561,36 @@ class TradingBot:
                                 f"*Time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                             )
                             self.send_telegram_notification(message)
-                    elif last_rsi >= self.rsi_sell_threshold:
-                        logger.info('SELL SIGNAL detected')
-                        if self.place_trade_order("Sell"):
-                            self.position_side = 'sell'
-                            self.entry_price = current_price
-                            self.position_qty = float(self.trade_qty)
-                            self.lowest_price = current_price
-                            self.achieved_targets = []  # Reset profit targets
-                            
-                            # Send opening notification
-                            message = (
-                                f"🚀 *NEW POSITION ENTRY*\n\n"
-                                f"*Action:* SELL\n"
-                                f"*Symbol:* {self.symbol}\n"
-                                f"*Quantity:* {self.trade_qty}\n"
-                                f"*Entry Price:* {current_price:.6f}\n"
-                                f"*RSI:* {last_rsi:.2f}\n"
-                                f"*Time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                            )
-                            self.send_telegram_notification(message)
-                    else:
-                        logger.info("No trading signal detected")
+                            # Notify initial TP/SL after entry
+                            tp, sl = self._compute_tpsl_prices()
+                            if tp is not None and sl is not None:
+                                self._notify_tpsl_updated(tp, sl)
+                        elif last_rsi >= self.rsi_sell_threshold:
+                            logger.info('SELL SIGNAL detected')
+                            if self.place_trade_order("Sell"):
+                                self.position_side = 'sell'
+                                self.entry_price = current_price
+                                self.position_qty = float(self.trade_qty)
+                                self.lowest_price = current_price
+                                self.achieved_targets = []  # Reset profit targets
+                                
+                                # Send opening notification
+                                message = (
+                                    f"🚀 *NEW POSITION ENTRY*\n\n"
+                                    f"*Action:* SELL\n"
+                                    f"*Symbol:* {self.symbol}\n"
+                                    f"*Quantity:* {self.trade_qty}\n"
+                                    f"*Entry Price:* {current_price:.6f}\n"
+                                    f"*RSI:* {last_rsi:.2f}\n"
+                                    f"*Time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                                )
+                                self.send_telegram_notification(message)
+                                # Notify initial TP/SL after entry
+                                tp, sl = self._compute_tpsl_prices()
+                                if tp is not None and sl is not None:
+                                    self._notify_tpsl_updated(tp, sl)
+                            else:
+                                logger.info("No trading signal detected")
                     
             except Exception as e:
                 logger.error(f"Unexpected error in main loop: {e}")
